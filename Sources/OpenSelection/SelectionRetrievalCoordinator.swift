@@ -46,9 +46,11 @@ public struct CopyRequest: Sendable {
     public let evidence: CopyEvidence
     public let evidenceRequirement: EvidenceRequirement
     /// Require a confirmed enabled Copy command before any event is posted; an unreadable menu
-    /// counts as not enabled. Independent of `evidenceRequirement`, so an explicit caller can waive
-    /// evidence and still refuse to post ⌘C into an app that cannot answer it (which is what beeps).
-    /// Defaults to false for compatibility with legacy/diagnostic callers.
+    /// counts as not enabled. Applies to weak and waived evidence: strong evidence is AX-confirmed
+    /// selected text and keeps its documented menu bypass. Independent of `evidenceRequirement`, so
+    /// an explicit caller can waive evidence and still refuse to post ⌘C into an app that cannot
+    /// answer it (which is what beeps). Defaults to false for compatibility with legacy/diagnostic
+    /// callers.
     public let requiresEnabledCopyMenu: Bool
 
     public init(
