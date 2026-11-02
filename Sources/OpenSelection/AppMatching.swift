@@ -99,6 +99,15 @@ public enum AppMatching: Sendable {
         return matchesAny(browserPatterns, bundleID: bundleID)
     }
 
+    /// WebKit browsers resolve text selections through `AXSelectedTextMarkerRange`, so their
+    /// accessibility answer is authoritative. Chromium/Electron (and Firefox) expose the web area
+    /// but cannot resolve a selection without renderer accessibility, which is why the empty-web-area
+    /// copy fallback exists for them and not for these.
+    public static func isWebKitBrowser(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return matchesAny(safariGroup, bundleID: bundleID)
+    }
+
     public static func isMultiProcess(_ bundleID: String?) -> Bool {
         guard let bundleID else { return false }
         return isBrowser(bundleID) || matchesAny(electronGroup, bundleID: bundleID)

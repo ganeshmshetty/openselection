@@ -88,6 +88,91 @@ final class AutomaticCopyCaptureTests: XCTestCase {
         XCTAssertEqual(board.string(forType: .string), "Original clipboard")
     }
 
+    /// Waived evidence is an explicit request, not proof of a selection. It is still weak context,
+    /// so a target whose Copy command is disabled must not receive the event: that is what AppKit
+    /// answers with its alert sound.
+    func testWaivedEvidenceRefusesDisabledCopyCommand() async {
+        let board = pasteboard()
+        defer { board.releaseGlobally() }
+        let changeCount = board.changeCount
+        let response = await AutomaticCopyCapture.captureResponse(
+            request: CopyRequest(
+                trigger: { XCTFail("A disabled Copy command must not be triggered by a waiver") },
+                evidence: CopyEvidence("waived-explicit-request", .weak),
+                evidenceRequirement: .waived
+            ),
+            pasteboard: board,
+            frontmostPID: { 42 },
+            menuState: { _ in .disabled },
+            overlayPresent: { false }
+        )
+        XCTAssertNil(response.result)
+        XCTAssertEqual(response.status, .copyBlocked)
+        XCTAssertEqual(board.changeCount, changeCount)
+        XCTAssertEqual(board.string(forType: .string), "Original clipboard")
+    }
+
+    /// "Couldn't tell" is not "disabled": a terminal omits the Copy item entirely. The permissive
+    /// legacy handling still proceeds there, while an explicit request can demand a confirmed
+    /// command — the two knobs are independent.
+    func testWaivedEvidenceHandlesUnknownMenuByRequirement() async {
+        func capture(strict: Bool) async -> (result: SelectionResult?, triggers: Int) {
+            let board = pasteboard()
+            defer { board.releaseGlobally() }
+            final class Counter: @unchecked Sendable { var value = 0 }
+            let counter = Counter()
+            let request = CopyRequest(
+                trigger: {
+                    counter.value += 1
+                    board.clearContents()
+                    board.setString("Selected text", forType: .string)
+                },
+                evidence: CopyEvidence("waived-explicit-request", .weak),
+                evidenceRequirement: .waived,
+                requiresEnabledCopyMenu: strict
+            )
+            let result = await AutomaticCopyCapture.capture(
+                request: request,
+                pasteboard: board,
+                frontmostPID: { 42 },
+                menuState: { _ in .unknown(.noCopyItem) },
+                overlayPresent: { false }
+            )
+            return (result, counter.value)
+        }
+
+        let permissive = await capture(strict: false)
+        XCTAssertEqual(permissive.triggers, 1, "an unreadable menu is not a disabled one")
+        XCTAssertEqual(permissive.result?.text, "Selected text")
+
+        let strict = await capture(strict: true)
+        XCTAssertEqual(strict.triggers, 0, "a strict caller requires a confirmed enabled command")
+        XCTAssertNil(strict.result)
+    }
+
+    /// A waiver is not proof of a selection: it never bypasses the Copy command check, even if a
+    /// caller attaches strong marker evidence to it.
+    func testWaivedRequestAlwaysConsultsTheCopyMenu() async {
+        let board = pasteboard()
+        defer { board.releaseGlobally() }
+        let changeCount = board.changeCount
+        let response = await AutomaticCopyCapture.captureResponse(
+            request: CopyRequest(
+                trigger: { XCTFail("A waived request must still be vouched for by the Copy command") },
+                evidence: CopyEvidence("waived-explicit-request", .strong),
+                evidenceRequirement: .waived,
+                requiresEnabledCopyMenu: true
+            ),
+            pasteboard: board,
+            frontmostPID: { 42 },
+            menuState: { _ in .disabled },
+            overlayPresent: { false }
+        )
+        XCTAssertNil(response.result)
+        XCTAssertEqual(response.status, .copyBlocked)
+        XCTAssertEqual(board.changeCount, changeCount)
+    }
+
     func testEnabledMenuCapturesAndRestoresClipboard() async {
         let board = pasteboard()
         defer { board.releaseGlobally() }

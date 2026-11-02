@@ -1738,6 +1738,7 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
     func testChromeEmptyWebAreaFallbackPermitsCopyForUnknownOrPointingHandCursor() async {
         for cursor: CursorClass in [.unknown, .pointingHand] {
             let coordinator = SelectionRetrievalCoordinator(
+                configuration: SelectionConfiguration(webAreaSettleMaxRetries: 0),
                 inspect: { Self.opaqueTarget(containedInRoles: ["AXWebArea"]) },
                 copyCapture: { _ in SelectionResult(text: "captured from chrome") }
             )
@@ -1748,6 +1749,121 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
             )
             XCTAssertEqual(result?.text, "captured from chrome", "cursor=\(cursor.rawValue) must allow copy fallback in browser")
         }
+    }
+
+    /// Issue #210: WebKit resolves the text selection through `AXSelectedTextMarkerRange`, so a web
+    /// area that AX exposes and that reports no selection means there is nothing to copy. The
+    /// browser fallback used to fire anyway, and the synthetic ⌘C made Safari answer with the
+    /// system alert sound.
+    func testWebKitEmptyWebAreaIsNotCopyEvidence() async {
+        let configuration = SelectionConfiguration(webAreaSettleMaxRetries: 0)
+        let coordinator = SelectionRetrievalCoordinator(
+            configuration: configuration,
+            inspect: { Self.opaqueTarget(containedInRoles: ["AXWebArea"]) },
+            copyCapture: { _ in
+                XCTFail("An exposed WebKit web area with no selection must not post Copy")
+                return nil
+            }
+        )
+        for trigger: TriggerSource in [.dragEnd, .doubleClick] {
+            let result = await coordinator.retrieve(
+                for: AppIdentity(bundleIdentifier: "com.apple.Safari"),
+                policy: AppPolicyContext(retrievalMode: .axWebArea),
+                cursor: .arrow,
+                trigger: trigger
+            )
+            XCTAssertNil(result, "\(trigger)")
+        }
+
+        // A WebKit app whose AX tree exposes nothing keeps the fallback: that is the blind case the
+        // browser branch exists for, and Chromium keeps it in the test above.
+        let blind = SelectionRetrievalCoordinator(
+            configuration: configuration,
+            inspect: { Self.opaqueTarget() },
+            copyCapture: { _ in SelectionResult(text: "captured blind", strategy: .keyboardCopy) }
+        )
+        let captured = await blind.retrieve(
+            for: AppIdentity(bundleIdentifier: "com.apple.Safari"),
+            policy: AppPolicyContext(retrievalMode: .axWebArea),
+            cursor: .arrow,
+            trigger: .doubleClick
+        )
+        XCTAssertEqual(captured?.text, "captured blind")
+    }
+
+    /// A completed drag/multi-click is only evidence for a target whose AX tree has no structure at
+    /// all (the blind Electron window this exists for). A group, window, list, or image describes a
+    /// surface whose drag selects objects, not text.
+    func testGestureEvidenceRequiresAStructurelessTarget() async {
+        let targets = [
+            Self.opaqueTarget(containedInRoles: ["AXGroup"]),
+            Self.opaqueTarget(containedInRoles: ["AXScrollArea"]),
+            AXElementInspector.Target(role: "AXGroup"),
+            AXElementInspector.Target(role: "AXWindow")
+        ]
+        for target in targets {
+            for trigger: TriggerSource in [.dragEnd, .doubleClick] {
+                let (result, box) = await gestureRetrieve(target: target, cursor: .arrow, trigger: trigger)
+                XCTAssertNil(result, "\(trigger) over \(target.role ?? target.containedInRoles.description)")
+                XCTAssertTrue(box.requests.isEmpty, "a structured surface must not authorize ⌘C")
+            }
+        }
+    }
+
+    /// The evidence waiver and the Copy-menu requirement are independent: an explicit request can
+    /// run without evidence while still refusing a Copy command it cannot confirm.
+    func testExplicitRequestWaivesEvidenceIndependentlyOfTheCopyMenuCheck() async {
+        final class RequestBox: @unchecked Sendable { var request: CopyRequest? }
+
+        func captured(strict: Bool?) async -> CopyRequest? {
+            let box = RequestBox()
+            let coordinator = SelectionRetrievalCoordinator(
+                inspect: { Self.opaqueTarget() },
+                detailedCopyCapture: { request in
+                    box.request = request
+                    return SelectionReadResponse(status: .noSelection)
+                }
+            )
+            _ = await coordinator.retrieve(
+                for: AppIdentity(bundleIdentifier: "com.example.someopaquecanvas"),
+                policy: AppPolicyContext(retrievalMode: .keyboardCopy),
+                cursor: .arrow,
+                requireCopyEvidence: false,
+                requireEnabledCopyMenu: strict
+            )
+            return box.request
+        }
+
+        let legacy = await captured(strict: nil)
+        XCTAssertEqual(legacy?.evidenceRequirement, .waived)
+        XCTAssertEqual(legacy?.evidence.strength, .weak, "a waiver is not proof of a selection")
+        XCTAssertEqual(legacy?.requiresEnabledCopyMenu, false, "nil keeps the historical coupling")
+
+        let strict = await captured(strict: true)
+        XCTAssertEqual(strict?.evidenceRequirement, .waived)
+        XCTAssertEqual(strict?.requiresEnabledCopyMenu, true)
+    }
+
+    /// Automatic retrieval keeps its strict menu gate through the historical coupling when the
+    /// caller does not set the new parameter explicitly.
+    func testAutomaticRequestStillRequiresTheEnabledCopyMenu() async {
+        final class RequestBox: @unchecked Sendable { var request: CopyRequest? }
+        let box = RequestBox()
+        let coordinator = SelectionRetrievalCoordinator(
+            inspect: { Self.opaqueTarget(containedInRoles: ["AXWebArea"]) },
+            detailedCopyCapture: { request in
+                box.request = request
+                return SelectionReadResponse(status: .noSelection)
+            }
+        )
+        _ = await coordinator.retrieve(
+            for: AppIdentity(bundleIdentifier: "com.google.Chrome"),
+            policy: AppPolicyContext(retrievalMode: .keyboardCopy),
+            cursor: .arrow,
+            trigger: .doubleClick
+        )
+        XCTAssertEqual(box.request?.evidenceRequirement, .required)
+        XCTAssertEqual(box.request?.requiresEnabledCopyMenu, true)
     }
 }
 
