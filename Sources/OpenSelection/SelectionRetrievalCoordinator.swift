@@ -31,19 +31,37 @@ public struct CopyEvidence: Sendable, Equatable {
 }
 
 public struct CopyRequest: Sendable {
+    /// Whether the caller has evidence that text is selected, or is exercising an explicit user
+    /// request that does not need any.
+    public enum EvidenceRequirement: Sendable, Equatable {
+        /// The copy strategies only run when `copyEvidence` found a reason (AX text, a resolved
+        /// marker range, a positive range, a text control/beam cursor, or a completed gesture).
+        case required
+        /// The caller is an explicit user request (⌘A/⌘L, ⇧-extend, an action). Copy may run with
+        /// no evidence, but this says nothing about whether the target can act on it.
+        case waived
+    }
+
     public let trigger: SelectionRetrievalCoordinator.CopyTrigger
     public let evidence: CopyEvidence
-    /// Weak evidence may trigger copy only when the target's Copy command is confirmed enabled.
-    /// Defaults to false for compatibility with explicit/legacy capture callers.
+    public let evidenceRequirement: EvidenceRequirement
+    /// Require a confirmed enabled Copy command before any event is posted; an unreadable menu
+    /// counts as not enabled. Applies to weak and waived evidence: strong evidence is AX-confirmed
+    /// selected text and keeps its documented menu bypass. Independent of `evidenceRequirement`, so
+    /// an explicit caller can waive evidence and still refuse to post ⌘C into an app that cannot
+    /// answer it (which is what beeps). Defaults to false for compatibility with legacy/diagnostic
+    /// callers.
     public let requiresEnabledCopyMenu: Bool
 
     public init(
         trigger: @escaping SelectionRetrievalCoordinator.CopyTrigger,
         evidence: CopyEvidence,
+        evidenceRequirement: EvidenceRequirement = .required,
         requiresEnabledCopyMenu: Bool = false
     ) {
         self.trigger = trigger
         self.evidence = evidence
+        self.evidenceRequirement = evidenceRequirement
         self.requiresEnabledCopyMenu = requiresEnabledCopyMenu
     }
 
@@ -238,6 +256,13 @@ public struct SelectionRetrievalCoordinator: Sendable {
     // MARK: - Retrieval Methods
 
     /// Reads the current selection and context details for an app under `policy`.
+    ///
+    /// - Parameters:
+    ///   - requireCopyEvidence: Refuse the copy strategies unless `copyEvidence` found a reason.
+    ///     Pass `false` only for an explicit user request.
+    ///   - requireEnabledCopyMenu: Require an enabled Copy command before posting any event.
+    ///     `nil` keeps the historical coupling (`requireCopyEvidence`), `true` makes an
+    ///     explicit-request caller strict too, and `false` keeps the permissive legacy handling.
     public func retrieveResponse(
         for app: AppIdentity = AppIdentity(),
         policy: SelectionPolicy = .default,
@@ -245,6 +270,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         isSelectAll: Bool = false,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic,
         trace: SelectionTrace? = nil
     ) async -> SelectionReadResponse {
@@ -252,7 +278,9 @@ public struct SelectionRetrievalCoordinator: Sendable {
         return await SelectionTrace.$current.withValue(activeTrace) {
             await retrieveTraced(for: app, policy: policy, cursor: cursor,
                 isSelectAll: isSelectAll, allowCopyFallback: allowCopyFallback,
-                requireCopyEvidence: requireCopyEvidence, trigger: trigger, trace: activeTrace)
+                requireCopyEvidence: requireCopyEvidence,
+                requireEnabledCopyMenu: requireEnabledCopyMenu,
+                trigger: trigger, trace: activeTrace)
         }
     }
 
@@ -263,6 +291,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         isSelectAll: Bool = false,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic,
         trace: SelectionTrace? = nil
     ) async -> SelectionReadResponse {
@@ -390,6 +419,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
             cursor: cursor,
             allowCopyFallback: allowCopyFallback,
             requireCopyEvidence: requireCopyEvidence,
+            requireEnabledCopyMenu: requireEnabledCopyMenu ?? requireCopyEvidence,
             trace: activeTrace
         ))
 
@@ -403,11 +433,13 @@ public struct SelectionRetrievalCoordinator: Sendable {
         for app: AppIdentity = AppIdentity(), policy: SelectionPolicy = .default,
         cursor: CursorClass = .unknown, isSelectAll: Bool = false,
         allowCopyFallback: Bool = true, requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic, trace: SelectionTrace? = nil
     ) async -> (result: SelectionResult?, isEditable: Bool) {
         let response = await retrieveResponse(for: app, policy: policy, cursor: cursor,
             isSelectAll: isSelectAll, allowCopyFallback: allowCopyFallback,
-            requireCopyEvidence: requireCopyEvidence, trigger: trigger, trace: trace)
+            requireCopyEvidence: requireCopyEvidence, requireEnabledCopyMenu: requireEnabledCopyMenu,
+            trigger: trigger, trace: trace)
         return (response.result, response.isEditable)
     }
 
@@ -419,6 +451,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         isSelectAll: Bool = false,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic,
         trace: SelectionTrace? = nil
     ) async -> (result: SelectionResult?, isEditable: Bool) {
@@ -429,6 +462,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
             isSelectAll: isSelectAll,
             allowCopyFallback: allowCopyFallback,
             requireCopyEvidence: requireCopyEvidence,
+            requireEnabledCopyMenu: requireEnabledCopyMenu,
             trigger: trigger,
             trace: trace
         )
@@ -442,6 +476,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         isSelectAll: Bool = false,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic,
         trace: SelectionTrace? = nil
     ) async -> SelectionResult? {
@@ -452,6 +487,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
             isSelectAll: isSelectAll,
             allowCopyFallback: allowCopyFallback,
             requireCopyEvidence: requireCopyEvidence,
+            requireEnabledCopyMenu: requireEnabledCopyMenu,
             trigger: trigger,
             trace: trace
         ).result
@@ -465,6 +501,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         isSelectAll: Bool = false,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool? = nil,
         trigger: TriggerSource = .programmatic,
         trace: SelectionTrace? = nil
     ) async -> SelectionResult? {
@@ -475,6 +512,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
             isSelectAll: isSelectAll,
             allowCopyFallback: allowCopyFallback,
             requireCopyEvidence: requireCopyEvidence,
+            requireEnabledCopyMenu: requireEnabledCopyMenu,
             trigger: trigger,
             trace: trace
         )
@@ -489,6 +527,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         cursor: CursorClass,
         allowCopyFallback: Bool = true,
         requireCopyEvidence: Bool = true,
+        requireEnabledCopyMenu: Bool = true,
         trace: SelectionTrace
     ) async -> SelectionResult? {
         let bundleID = app.bundleIdentifier ?? "unknown"
@@ -521,6 +560,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
                 ])
             }
             var evidence: CopyEvidence? = nil
+            var evidenceRequirement = CopyRequest.EvidenceRequirement.required
             if strategy == .keyboardCopy || strategy == .menuCopy {
                 if requireCopyEvidence {
                     if let initial = Self.copyEvidence(
@@ -564,7 +604,10 @@ public struct SelectionRetrievalCoordinator: Sendable {
                         continue
                     }
                 } else {
-                    evidence = CopyEvidence("waived-ax-blind-surface", .strong)
+                    // Explicit user request: no evidence is needed, but this is still weak context,
+                    // so the Copy command check applies unless the caller opted out above.
+                    evidence = CopyEvidence("waived-explicit-request", .weak)
+                    evidenceRequirement = .waived
                 }
             }
             let (rawResult, outcome) = await run(
@@ -572,7 +615,8 @@ public struct SelectionRetrievalCoordinator: Sendable {
                 app: app,
                 target: target,
                 evidence: evidence,
-                requiresEnabledCopyMenu: requireCopyEvidence,
+                evidenceRequirement: evidenceRequirement,
+                requiresEnabledCopyMenu: requireEnabledCopyMenu,
                 trace: trace
             )
             if trace.selectionReadStatus == .targetChanged || trace.selectionReadStatus == .cancelled {
@@ -752,6 +796,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         app: AppIdentity,
         target: AXElementInspector.Target,
         evidence: CopyEvidence? = nil,
+        evidenceRequirement: CopyRequest.EvidenceRequirement = .required,
         requiresEnabledCopyMenu: Bool,
         trace: SelectionTrace? = nil
     ) async -> (result: SelectionResult?, outcome: StrategyOutcome) {
@@ -818,6 +863,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
             let request = CopyRequest(
                 trigger: trigger,
                 evidence: evidence ?? CopyEvidence("unspecified", .weak),
+                evidenceRequirement: evidenceRequirement,
                 requiresEnabledCopyMenu: requiresEnabledCopyMenu
             )
             let response = await copyCapture(request)
@@ -1043,6 +1089,11 @@ public struct SelectionRetrievalCoordinator: Sendable {
     /// `isTextBearing` is intentionally *not* used here: it returns true whenever
     /// `webArea != nil` or an ancestor is `AXWebArea`.
     ///
+    /// A completed drag/multi-click only counts on a target with no AX structure at all. For a
+    /// WebKit browser an exposed web area that reports no selection is a contrary signal (WebKit's
+    /// marker range is authoritative), while Chromium/Electron pages keep the empty-web-area
+    /// fallback because their AX tree cannot resolve the selection without renderer accessibility.
+    ///
     /// Two AX signals are deliberately excluded because they are non-nil even without a text
     /// selection in Electron/web canvases (Figma on its canvas): a collapsed caret exposes an
     /// `AXSelectedTextRange` with length 0 (so the range must have positive length), and a web
@@ -1087,18 +1138,32 @@ public struct SelectionRetrievalCoordinator: Sendable {
         }
         if isTextControl { return .init("ax-text-control", .weak) }
 
-        if let bundleID, AppMatching.isBrowser(bundleID) {
-            if isFallbackFromAX { return .init("ax-empty-browser-fallback", .weak) }
-            if cursor == .unknown || cursor == .pointingHand { return .init("browser-cursor:\(cursor.rawValue)", .weak) }
-        }
-        // Electron pages often show an arrow or custom cursor over selectable text, and with no
-        // AX tree the selection is invisible to AX. A completed drag or multi-click is still
-        // selection intent; as weak evidence it posts Copy only if the Copy command is confirmed
-        // enabled. A web area that AX *does* expose and that reports no selected text is a
-        // contrary signal (a Figma canvas object drag), so it never qualifies.
         let exposesWebContent = target.webArea != nil || target.role == "AXWebArea"
             || target.containedInRoles.contains("AXWebArea")
-        if let trigger, selectionGestureTriggers.contains(trigger), !exposesWebContent {
+
+        if let bundleID, AppMatching.isBrowser(bundleID) {
+            // A WebKit page that AX exposes and that reports no selection is a contrary signal:
+            // WebKit resolves `AXSelectedTextMarkerRange` authoritatively, so there is nothing to
+            // copy and a synthetic ⌘C is answered with the system alert sound (issue #210).
+            // Chromium/Electron keep the fallback: they expose the web area but cannot resolve the
+            // selection without renderer accessibility, which is what this fallback is for.
+            let authoritativeWebKitEmpty = exposesWebContent && AppMatching.isWebKitBrowser(bundleID)
+            if !authoritativeWebKitEmpty {
+                if isFallbackFromAX { return .init("ax-empty-browser-fallback", .weak) }
+                if cursor == .unknown || cursor == .pointingHand {
+                    return .init("browser-cursor:\(cursor.rawValue)", .weak)
+                }
+            }
+        }
+        // A completed drag or multi-click is selection intent for a target whose AX tree has no
+        // structure at all — the blind Electron window this exists for. A photo, a video, a canvas
+        // object, or a window exposes structure and describes selected *objects*, not text, so it
+        // needs the I-beam or a text-control role above. As weak evidence this still posts Copy
+        // only if the Copy command is confirmed enabled.
+        let isStructureless = target.role == nil
+            && target.containedInRoles.isEmpty
+            && target.webArea == nil
+        if let trigger, selectionGestureTriggers.contains(trigger), !exposesWebContent, isStructureless {
             return .init("selection-gesture:\(trigger.raw)", .weak)
         }
         return nil

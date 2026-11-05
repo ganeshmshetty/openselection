@@ -193,7 +193,16 @@ public enum AutomaticCopyCapture {
         if Task.isCancelled { return SelectionReadResponse(status: .cancelled) }
         guard let pid = frontmostPID() else { return SelectionReadResponse(status: .targetChanged) }
 
-        if request.evidence.strength == .weak {
+        // Strong evidence is AX-confirmed selected text: proof of a real selection, so it keeps its
+        // documented menu bypass and does not pay the settle poll (up to 250 ms while a lagging app
+        // enables Copy) on every capture. `requiresEnabledCopyMenu` governs the weak and waived
+        // evidence below.
+        //
+        // Weak evidence may come from a gesture, an I-beam cursor, or an explicit request that
+        // waived evidence (`CopyRequest.EvidenceRequirement.waived`). All of them are guesses about
+        // whether the target can act on Copy, so the target's Copy command vouches for them.
+        // `requiresEnabledCopyMenu` then only decides whether "couldn't tell" is a refusal.
+        if request.evidenceRequirement == .waived || request.evidence.strength == .weak {
             let phaseStart = SelectionTrace.current?.elapsedMicros ?? 0
             let state = await menuState(pid)
             if let trace = SelectionTrace.current { trace.addMetric("copyMenuMicros", trace.elapsedMicros - phaseStart) }
