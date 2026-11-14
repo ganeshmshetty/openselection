@@ -17,6 +17,7 @@ public typealias OpenSelectionCoordinator = SelectionRetrievalCoordinator
 public typealias OpenSelectionReplacer = SelectionReplacer
 public typealias OpenSelectionMonitorType = OpenSelectionMonitor
 public typealias OpenSelectionPasteAvailabilityProbe = PasteAvailabilityProbe
+public typealias OpenSelectionEditabilityProbe = EditabilityProbe
 public typealias DiagnosticsLogLevel = LogLevel
 public typealias DiagnosticsLogCategory = LogCategory
 public typealias DiagnosticsFieldValue = FieldValue
@@ -47,6 +48,7 @@ public enum OpenSelection: Sendable {
     public typealias OpenSelectionMonitor = OpenSelectionMonitorType
     public typealias PasteProbe = OpenSelectionPasteAvailabilityProbe
     public typealias PasteAvailabilityProbe = OpenSelectionPasteAvailabilityProbe
+    public typealias EditabilityProbe = OpenSelectionEditabilityProbe
     public typealias ClipboardCoordinator = PasteboardCoordinator
     public typealias ClipboardSession = PasteboardSession
     public typealias ClipboardPriority = PasteboardOperationPriority
