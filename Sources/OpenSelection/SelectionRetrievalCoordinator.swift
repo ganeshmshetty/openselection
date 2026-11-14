@@ -1075,20 +1075,13 @@ public struct SelectionRetrievalCoordinator: Sendable {
             "AXComboBox",
             "AXSearchField"
         ]
-        // Positive settable proof wins even for a non-standard role: a contenteditable web
-        // editor often reports a web area instead of a text control.
-        if target.isValueSettable == true || target.isSelectedTextSettable == true {
+        if let role = target.role, editableRoles.contains(role) {
             return true
         }
-        guard let role = target.role, editableRoles.contains(role) else { return false }
-        // A standard text control that reports both attributes non-settable is read-only.
-        // A selected-text range alone means selectable, not editable.
-        if target.isValueSettable == false && target.isSelectedTextSettable == false {
-            return false
+        if target.selectedTextRange != nil {
+            return true
         }
-        // The settable read is unavailable; keep the role fallback rather than hiding editing
-        // in apps with a partial AX implementation.
-        return true
+        return false
     }
 
     /// Text-control roles that justify a copy-based read on their own. Deliberately excludes
