@@ -22,7 +22,20 @@ final class CopyMenuProbe {
                                       attributes: .concurrent)
     nonisolated(unsafe) private var terminationObserver: (any NSObjectProtocol)?
 
-    init() {
+    private let readEnabled: @Sendable (AXUIElement, TimeInterval) -> EnabledRead
+    private let discover: @Sendable (pid_t, TimeInterval, Date) -> MenuProbeOutcome
+
+    init(
+        readEnabled: @escaping @Sendable (AXUIElement, TimeInterval) -> EnabledRead = {
+            AXMenuNavigator.readEnabled(of: $0, timeout: $1)
+        },
+        discover: @escaping @Sendable (pid_t, TimeInterval, Date) -> MenuProbeOutcome = {
+            AXMenuNavigator.probeMenuItem(.copy, in: AXUIElementCreateApplication($0),
+                                          matchingShortcutOnly: true, timeout: $1, deadline: $2)
+        }
+    ) {
+        self.readEnabled = readEnabled
+        self.discover = discover
         terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
@@ -69,21 +82,24 @@ final class CopyMenuProbe {
 
     private func resolve(_ pid: pid_t, _ timeout: TimeInterval) async -> CopyMenuState {
         if let box = cached[pid] {
+            let readEnabled = self.readEnabled
             let read = await run(hardLimit: timeout * 2, fallback: EnabledRead.failed) {
-                AXMenuNavigator.readEnabled(of: box.element, timeout: timeout)
+                readEnabled(box.element, timeout)
             }
             switch read {
             case .value(true): return .enabled
-            case .value(false): return .disabled
+            case .value(false):
+                // A rebuilt menu can leave the old AX element valid but permanently disabled.
+                cached[pid] = nil
             case .failed: return .unknown(.timeout)
             case .invalidElement: cached[pid] = nil   // menu rebuilt; rediscover
             }
         }
         let budget = timeout
         let deadline = Date().addingTimeInterval(budget)
+        let discover = self.discover
         let outcome = await run(hardLimit: budget + 0.05, fallback: MenuProbeOutcome.timedOut) {
-            AXMenuNavigator.probeMenuItem(.copy, in: AXUIElementCreateApplication(pid),
-                                          matchingShortcutOnly: true, timeout: timeout, deadline: deadline)
+            discover(pid, timeout, deadline)
         }
         switch outcome {
         case .found(let el, let enabled):
@@ -203,13 +219,23 @@ public enum AutomaticCopyCapture {
                 "evidence": .token(request.evidence.reason)
             ])
             if request.requiresEnabledCopyMenu {
-                guard state == .enabled else {
-                    DiagnosticsHub.shared.log(.debug, .pasteboard, "automatic copy skipped without enabled Copy command", fields: [
+                if case .unknown(let reason) = state, reason == .noCopyItem {
+                    // No Edit ▸ Copy item exists to validate: CEF/Electron-style apps handle the
+                    // shortcut in-process. An absent item is not a disabled command, so refusal
+                    // here would leave those apps with no read path at all.
+                    DiagnosticsHub.shared.log(.trace, .pasteboard, "copy menu has no Copy item, proceeding under weak evidence", fields: [
                         "pid": .int(Int64(pid)),
-                        "menuState": .token("\(state)"),
                         "evidence": .token(request.evidence.reason)
                     ])
-                    return SelectionReadResponse(status: .copyBlocked)
+                } else {
+                    guard state == .enabled else {
+                        DiagnosticsHub.shared.log(.debug, .pasteboard, "automatic copy skipped without enabled Copy command", fields: [
+                            "pid": .int(Int64(pid)),
+                            "menuState": .token("\(state)"),
+                            "evidence": .token(request.evidence.reason)
+                        ])
+                        return SelectionReadResponse(status: .copyBlocked)
+                    }
                 }
             } else if state == .disabled {
                 DiagnosticsHub.shared.log(.debug, .pasteboard, "automatic copy skipped, copy disabled under weak evidence", fields: [
