@@ -37,6 +37,12 @@ public struct AXElementInspector {
         public let selectedMarkerText: String?
         public let value: String?
         public let selectedTextRange: AnyObject?
+        /// `kAXValueAttribute` settable state: positive proof the control accepts edits.
+        /// `nil` when the attribute read failed or the app does not expose it.
+        public let isValueSettable: Bool?
+        /// `kAXSelectedTextAttribute` settable state. Web editors often expose this instead of
+        /// a settable value.
+        public let isSelectedTextSettable: Bool?
         public let bounds: CGRect?
 
         public init(
@@ -53,6 +59,8 @@ public struct AXElementInspector {
             selectedMarkerText: String? = nil,
             value: String? = nil,
             selectedTextRange: AnyObject? = nil,
+            isValueSettable: Bool? = nil,
+            isSelectedTextSettable: Bool? = nil,
             bounds: CGRect? = nil
         ) {
             self.focusedApp = focusedApp
@@ -68,6 +76,8 @@ public struct AXElementInspector {
             self.selectedMarkerText = selectedMarkerText
             self.value = value
             self.selectedTextRange = selectedTextRange
+            self.isValueSettable = isValueSettable
+            self.isSelectedTextSettable = isSelectedTextSettable
             self.bounds = bounds
         }
     }
@@ -174,6 +184,8 @@ public struct AXElementInspector {
         let selectedMarkerText = marker.flatMap { markerText(for: $0.owner, markerRange: $0.range, trace: trace) }
         let value = focusedElement.flatMap { boundedRead($0, kAXValueAttribute, trace: trace) as? String }
         let selectedTextRange = focusedElement.flatMap { boundedRead($0, kAXSelectedTextRangeAttribute, trace: trace) }
+        let isValueSettable = focusedElement.flatMap { boundedSettable($0, kAXValueAttribute, trace: trace) }
+        let isSelectedTextSettable = focusedElement.flatMap { boundedSettable($0, kAXSelectedTextAttribute, trace: trace) }
         let bounds = bounds(for: focusedElement, range: selectedTextRange, trace: trace)
 
         return Target(
@@ -190,6 +202,8 @@ public struct AXElementInspector {
             selectedMarkerText: selectedMarkerText,
             value: value,
             selectedTextRange: selectedTextRange,
+            isValueSettable: isValueSettable,
+            isSelectedTextSettable: isSelectedTextSettable,
             bounds: bounds
         )
     }
@@ -312,6 +326,19 @@ public struct AXElementInspector {
         guard remaining > 0 else { return nil }
         AXUIElementSetMessagingTimeout(element, Float(max(minPerCallTimeout, remaining)))
         return read(element, attribute, trace: trace)
+    }
+
+    /// Deadline-bounded `AXUIElementIsAttributeSettable`, the only positive proof that a text
+    /// control accepts edits. A read-only text view still exposes a selected-text range, so the
+    /// range alone must never answer this question.
+    private static func boundedSettable(_ element: AXUIElement, _ attribute: String, trace: SelectionTrace?) -> Bool? {
+        if let remaining = remainingBudget(trace: trace) {
+            guard remaining > 0 else { return nil }
+            AXUIElementSetMessagingTimeout(element, Float(max(minPerCallTimeout, remaining)))
+        }
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success else { return nil }
+        return settable.boolValue
     }
 
     /// Deadline gate for parameterized AX queries (`AXStringForTextMarkerRange`,
