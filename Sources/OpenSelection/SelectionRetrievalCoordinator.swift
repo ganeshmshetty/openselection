@@ -617,6 +617,8 @@ public struct SelectionRetrievalCoordinator: Sendable {
                 evidence: evidence,
                 evidenceRequirement: evidenceRequirement,
                 requiresEnabledCopyMenu: requireEnabledCopyMenu,
+                settleWebArea: !(allowCopyFallback && requireCopyEvidence
+                    && Self.canAvoidWebAreaSettle(target, cursor: cursor, trigger: trace.trigger)),
                 trace: trace
             )
             if trace.selectionReadStatus == .targetChanged || trace.selectionReadStatus == .cancelled {
@@ -791,6 +793,21 @@ public struct SelectionRetrievalCoordinator: Sendable {
         }
     }
 
+    /// A native static-text list has no web selection surface to settle. Read AX once,
+    /// then let the existing weak-evidence Copy gate decide whether capture is safe.
+    /// Genuine web areas and marker-bearing targets retain the full settle policy.
+    internal static func canAvoidWebAreaSettle(
+        _ target: AXElementInspector.Target, cursor: CursorClass, trigger: TriggerSource?
+    ) -> Bool {
+        guard target.role == "AXStaticText", target.containedInRoles.contains("AXList"),
+              target.webArea == nil, !target.containedInRoles.contains("AXWebArea"),
+              target.selectedTextMarkerRange == nil,
+              let evidence = copyEvidence(.keyboardCopy, target: target, cursor: cursor, trigger: trigger),
+              evidence.strength == .weak
+        else { return false }
+        return true
+    }
+
     private func run(
         _ strategy: SelectionStrategy,
         app: AppIdentity,
@@ -798,6 +815,7 @@ public struct SelectionRetrievalCoordinator: Sendable {
         evidence: CopyEvidence? = nil,
         evidenceRequirement: CopyRequest.EvidenceRequirement = .required,
         requiresEnabledCopyMenu: Bool,
+        settleWebArea: Bool = true,
         trace: SelectionTrace? = nil
     ) async -> (result: SelectionResult?, outcome: StrategyOutcome) {
         switch strategy {
@@ -815,12 +833,13 @@ public struct SelectionRetrievalCoordinator: Sendable {
             defer { if let trace { trace.addMetric("webAreaMicros", trace.elapsedMicros - phaseStart) } }
             var snapshot: AXElementInspector.Target? = target
             var attempts = 0
-            while attempts < configuration.webAreaSettleMaxRetries {
+            let maxAttempts = settleWebArea ? configuration.webAreaSettleMaxRetries : 1
+            while attempts < maxAttempts {
                 if let snapshot, let result = AXWebAreaStrategy.read(from: snapshot) {
                     return (result, .succeeded)
                 }
                 attempts += 1
-                if attempts < configuration.webAreaSettleMaxRetries {
+                if attempts < maxAttempts {
                     trace?.addMetric("webAreaRetries")
                     try? await Task.sleep(nanoseconds: UInt64(configuration.webAreaSettleInterval * 1_000_000_000))
                     if let element = snapshot?.webArea ?? snapshot?.focusedElement,
@@ -1056,13 +1075,20 @@ public struct SelectionRetrievalCoordinator: Sendable {
             "AXComboBox",
             "AXSearchField"
         ]
-        if let role = target.role, editableRoles.contains(role) {
+        // Positive settable proof wins even for a non-standard role: a contenteditable web
+        // editor often reports a web area instead of a text control.
+        if target.isValueSettable == true || target.isSelectedTextSettable == true {
             return true
         }
-        if target.selectedTextRange != nil {
-            return true
+        guard let role = target.role, editableRoles.contains(role) else { return false }
+        // A standard text control that reports both attributes non-settable is read-only.
+        // A selected-text range alone means selectable, not editable.
+        if target.isValueSettable == false && target.isSelectedTextSettable == false {
+            return false
         }
-        return false
+        // The settable read is unavailable; keep the role fallback rather than hiding editing
+        // in apps with a partial AX implementation.
+        return true
     }
 
     /// Text-control roles that justify a copy-based read on their own. Deliberately excludes
@@ -1127,7 +1153,14 @@ public struct SelectionRetrievalCoordinator: Sendable {
 
         // A text selection signal above wins over the focused element's broader structural role.
         // Without one, image and collection/item surfaces describe selected objects, not text.
-        if Self.isNonTextSelectionContext(target) { return nil }
+        // Static text can be selectable inside a document list without being a selected row.
+        // This supplies only weak context; automatic Copy still requires an enabled menu.
+        let isStaticTextListGesture = target.role == "AXStaticText"
+            && target.containedInRoles.contains("AXList")
+            && target.containedInRoles.isDisjoint(with: nonTextSelectionRoles.subtracting(["AXList"]))
+            && cursor == .beam
+            && trigger.map { selectionGestureTriggers.contains($0) } == true
+        if Self.isNonTextSelectionContext(target), !isStaticTextListGesture { return nil }
 
         let isTextControl = target.role.map { textEvidenceRoles.contains($0) } == true
             || !target.containedInRoles.isDisjoint(with: textEvidenceRoles)

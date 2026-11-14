@@ -57,9 +57,16 @@ public enum CopyTriggerGate {
         "com.apple.Spotlight"
     ]
 
-    /// Bundle identifiers of known screenshot and screen-recording tools whose selection pickers
-    /// or crosshair overlays swallow ⌘C to copy images instead of text.
-    public static let screenCaptureBundleIDs: Set<String> = [
+    /// Bundle identifiers of the system screenshot UI. While a capture is live the process owns an
+    /// extreme-layer picker/toolbar alongside a sub-1000-layer full-screen backdrop. macOS 26/27 can
+    /// leave that backdrop behind after the capture finishes (#220); the backdrop alone is inert and
+    /// must not suppress copy for the rest of the session.
+    public static let systemCaptureBundleIDs: Set<String> = [
+        "com.apple.screencapture",      // defensive: the CLI helper resolves no bundle on current builds
+        "com.apple.screencaptureui"
+    ]
+
+    private static let thirdPartyScreenCaptureBundleIDs: Set<String> = [
         "com.cleanshot.app",
         "pl.maketheweb.cleanshotx",
         "cc.ffitch.shottr",
@@ -71,10 +78,13 @@ public enum CopyTriggerGate {
         "com.x-art.Xnip",
         "com.monosnap.monosnap",
         "org.flameshot.flameshot",
-        "com.skillbrains.lightshot",
-        "com.apple.screencapture",
-        "com.apple.screencaptureui"
+        "com.skillbrains.lightshot"
     ]
+
+    /// Bundle identifiers of known screenshot and screen-recording tools whose selection pickers
+    /// or crosshair overlays swallow ⌘C to copy images instead of text.
+    public static let screenCaptureBundleIDs: Set<String> =
+        thirdPartyScreenCaptureBundleIDs.union(systemCaptureBundleIDs)
 
     /// Whether `window` can own the key window that receives a synthetic ⌘C. Windows with no owning
     /// application (the window server), system chrome, and extreme layer windows (shields/hardware
@@ -86,6 +96,24 @@ public enum CopyTriggerGate {
         // they can never own an app's key window for text selection.
         if window.layer >= 1000 { return false }
         return true
+    }
+
+    /// A live system capture session keeps an extreme-layer picker/toolbar window alongside its
+    /// sub-1000-layer backdrop. The backdrop left after a capture has no such companion. The
+    /// predicate is deliberately loose about ownership (same process or another system capture
+    /// component) so a build that moves the toolbar to a helper process still counts, but tight
+    /// enough to ignore 1×1 sentinels, shields, and invisible helpers.
+    private static func hasLiveSystemCaptureCompanion(
+        of window: OnScreenWindowInfo,
+        in windows: [OnScreenWindowInfo]
+    ) -> Bool {
+        windows.contains { candidate in
+            guard candidate.layer >= 1000, candidate.layer < 10_000,
+                  candidate.alpha > 0,
+                  candidate.frame.width > 1, candidate.frame.height > 1 else { return false }
+            if candidate.ownerPID == window.ownerPID { return true }
+            return candidate.ownerBundleID.map(systemCaptureBundleIDs.contains) == true
+        }
     }
 
     /// Pure decision over a front-to-back window list. Unknown inputs never suppress (fail open).
@@ -118,6 +146,14 @@ public enum CopyTriggerGate {
 
         let coversDisplay = top.frame.width >= displayBounds.width - 1
             && top.frame.height >= displayBounds.height - 1
+
+        // The system screenshot UI leaves its layer-24 backdrop on screen after a capture. Without
+        // the live session's extreme-layer picker/toolbar it is an inert leftover, not a capture
+        // that can swallow ⌘C. Treating it as an overlay blocked every copy until the process died.
+        if let bundleID = top.ownerBundleID, systemCaptureBundleIDs.contains(bundleID),
+           !hasLiveSystemCaptureCompanion(of: top, in: windows) {
+            return false
+        }
 
         if top.ownerPID == frontmostPID {
             // A capture tool can *activate itself* while its picker is up (CleanShot X reports as
@@ -166,13 +202,19 @@ public enum CopyTriggerGate {
         )
         // Log the decision inputs only when we refuse, so a false positive is diagnosable from a
         // user's log dump instead of being an invisible "no selection".
+        let top = windows.first { $0.layer >= 0 && $0.alpha > 0 && $0.frame.contains(point) && canOwnKeyWindow($0) }
         if suppressed {
-            let top = windows.first { $0.layer >= 0 && $0.alpha > 0 && $0.frame.contains(point) && canOwnKeyWindow($0) }
             DiagnosticsHub.shared.log(.info, .gate, "copy gate suppressed by foreign overlay", fields: [
                 "frontmostPID": .int(Int64(frontmostPID ?? -1)),
                 "selfPID": .int(Int64(ProcessInfo.processInfo.processIdentifier)),
                 "topPID": .int(Int64(top?.ownerPID ?? -1)),
                 "topLayer": .int(Int64(top?.layer ?? -1))
+            ])
+        } else if let top, let bundleID = top.ownerBundleID, systemCaptureBundleIDs.contains(bundleID),
+                  !hasLiveSystemCaptureCompanion(of: top, in: windows) {
+            DiagnosticsHub.shared.log(.debug, .gate, "copy gate ignored stale system capture backdrop", fields: [
+                "topPID": .int(Int64(top.ownerPID)),
+                "topLayer": .int(Int64(top.layer))
             ])
         }
         return suppressed

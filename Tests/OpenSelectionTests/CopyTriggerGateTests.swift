@@ -144,6 +144,123 @@ final class CopyTriggerGateTests: XCTestCase {
             frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
     }
 
+    /// Regression (#220): macOS 26/27 can leave the system screenshot UI's layer-24 full-screen
+    /// backdrop on screen after a capture finishes. The leftover is inert — the process is idle and
+    /// the window never owns the key window — so it must not suppress copy for the rest of the session.
+    func testStaleSystemCaptureBackdropDoesNotSuppress() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// While the system screenshot UI is live, the same process owns an extreme-layer picker/toolbar
+    /// alongside the backdrop. The backdrop can swallow the synthetic ⌘C then, so it still suppresses.
+    func testLiveSystemCaptureBackdropStillSuppresses() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 1499,
+                               frame: CGRect(x: 335, y: 0, width: 800, height: 90)),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertTrue(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// An unrelated utility's extreme-layer window must not make a stale system capture backdrop
+    /// look like a live session; only a companion owned by the same process counts.
+    func testStaleSystemCaptureBackdropWithUnrelatedHighLayerWindowDoesNotSuppress() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 888, ownerBundleID: "com.hegenberg.BetterTouchTool", layer: 1500, frame: display),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// A lingering `screencaptureui` can become frontmost; the stale check must run before the
+    /// frontmost capture branch, which would otherwise suppress on the backdrop alone.
+    func testStaleSystemCaptureBackdropWhileFrontmostDoesNotSuppress() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: 999, selfPID: selfPID, displayBounds: display))
+    }
+
+    func testLiveSystemCaptureBackdropWhileFrontmostStillSuppresses() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 1499,
+                               frame: CGRect(x: 335, y: 866, width: 800, height: 90))
+        ]
+        XCTAssertTrue(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: 999, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// An invisible same-process helper is not evidence of a live picker.
+    func testInvisibleSystemCaptureCompanionDoesNotCount() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 1499,
+                               frame: CGRect(x: 335, y: 866, width: 800, height: 90), alpha: 0.0),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// The companion must be at an extreme layer; a sub-1000 helper cannot stand in for the picker.
+    func testSubExtremeSystemCaptureCompanionDoesNotCount() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 999,
+                               frame: CGRect(x: 335, y: 866, width: 800, height: 90)),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display))
+    }
+
+    /// The stale check applies to explicit copies too: the leftover cannot swallow the synthetic ⌘C.
+    func testStaleSystemCaptureBackdropDoesNotBlockExplicitCopy() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertFalse(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display, intent: .explicitUserCopy))
+    }
+
+    func testLiveSystemCaptureBackdropStillBlocksExplicitCopy() {
+        let windows = [
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 24, frame: display),
+            OnScreenWindowInfo(ownerPID: 999, ownerBundleID: "com.apple.screencaptureui", layer: 1499,
+                               frame: CGRect(x: 335, y: 866, width: 800, height: 90)),
+            OnScreenWindowInfo(ownerPID: frontmost, ownerBundleID: "com.apple.Safari", layer: 0, frame: display)
+        ]
+        XCTAssertTrue(CopyTriggerGate.isForeignOverlay(
+            windows: windows, at: CGPoint(x: 500, y: 400),
+            frontmostPID: frontmost, selfPID: selfPID, displayBounds: display, intent: .explicitUserCopy))
+    }
+
+    /// The stale check only runs for IDs that the capture branches recognise; the subset is
+    /// load-bearing and must not drift.
+    func testSystemCaptureIDsAreRecognisedAsScreenCaptureTools() {
+        XCTAssertTrue(CopyTriggerGate.systemCaptureBundleIDs.isSubset(of: CopyTriggerGate.screenCaptureBundleIDs))
+    }
+
     /// The window server owns the menu bar (and other chrome) with no owning application; a
     /// display-covering window server window is not an app overlay either.
     func testWindowServerChromeDoesNotSuppress() {
