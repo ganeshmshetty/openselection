@@ -114,9 +114,10 @@ final class AutomaticCopyCaptureTests: XCTestCase {
 
     /// "Couldn't tell" is not "disabled": a terminal omits the Copy item entirely. The permissive
     /// legacy handling still proceeds there, while an explicit request can demand a confirmed
-    /// command — the two knobs are independent.
+    /// command — the two knobs are independent. An absent Copy item has no command to validate,
+    /// so it proceeds even for a strict caller; a timeout or unreadable verdict still refuses.
     func testWaivedEvidenceHandlesUnknownMenuByRequirement() async {
-        func capture(strict: Bool) async -> (result: SelectionResult?, triggers: Int) {
+        func capture(strict: Bool, menu: CopyMenuState) async -> (result: SelectionResult?, triggers: Int) {
             let board = pasteboard()
             defer { board.releaseGlobally() }
             final class Counter: @unchecked Sendable { var value = 0 }
@@ -135,19 +136,23 @@ final class AutomaticCopyCaptureTests: XCTestCase {
                 request: request,
                 pasteboard: board,
                 frontmostPID: { 42 },
-                menuState: { _ in .unknown(.noCopyItem) },
+                menuState: { _ in menu },
                 overlayPresent: { false }
             )
             return (result, counter.value)
         }
 
-        let permissive = await capture(strict: false)
+        let permissive = await capture(strict: false, menu: .unknown(.noCopyItem))
         XCTAssertEqual(permissive.triggers, 1, "an unreadable menu is not a disabled one")
         XCTAssertEqual(permissive.result?.text, "Selected text")
 
-        let strict = await capture(strict: true)
-        XCTAssertEqual(strict.triggers, 0, "a strict caller requires a confirmed enabled command")
-        XCTAssertNil(strict.result)
+        let strictNoItem = await capture(strict: true, menu: .unknown(.noCopyItem))
+        XCTAssertEqual(strictNoItem.triggers, 1, "an absent Copy item is not a disabled command")
+        XCTAssertEqual(strictNoItem.result?.text, "Selected text")
+
+        let strictTimeout = await capture(strict: true, menu: .unknown(.timeout))
+        XCTAssertEqual(strictTimeout.triggers, 0, "a strict caller requires a confirmed enabled command")
+        XCTAssertNil(strictTimeout.result)
     }
 
     /// A waiver is not proof of a selection: it never bypasses the Copy command check, even if a
