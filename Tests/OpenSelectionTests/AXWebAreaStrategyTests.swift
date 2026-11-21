@@ -10,6 +10,7 @@ final class AXWebAreaStrategyTests: XCTestCase {
         webArea: AXUIElement? = nil,
         selectedText: String? = nil,
         selectedTextMarkerRange: AnyObject? = nil,
+        selectedMarkerText: String? = nil,
         bounds: CGRect? = nil
     ) -> AXElementInspector.Target {
         AXElementInspector.Target(
@@ -22,6 +23,7 @@ final class AXWebAreaStrategyTests: XCTestCase {
             webArea: webArea,
             selectedText: selectedText,
             selectedTextMarkerRange: selectedTextMarkerRange,
+            selectedMarkerText: selectedMarkerText,
             value: nil,
             selectedTextRange: nil,
             bounds: bounds
@@ -63,6 +65,17 @@ final class AXWebAreaStrategyTests: XCTestCase {
         let result = AXWebAreaStrategy.read(from: target(
             selectedText: "",
             selectedTextMarkerRange: nil
+        ))
+
+        XCTAssertNil(result)
+    }
+
+    func testReadReturnsNilForObjectReplacementMarkerText() {
+        // Chrome resolves a page-object marker range (a video tile, an image) to a lone U+FFFC.
+        // It names no text, so it must not produce a selection.
+        let result = AXWebAreaStrategy.read(from: target(
+            selectedText: nil,
+            selectedMarkerText: "\u{FFFC}"
         ))
 
         XCTAssertNil(result)

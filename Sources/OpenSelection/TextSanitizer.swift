@@ -29,7 +29,14 @@ public enum TextSanitizer: Sendable {
             "\u{202D}", // Left-to-right override
             "\u{202E}", // Right-to-left override
             "\u{2060}", // Word joiner
-            "\u{FEFF}"  // Zero-width no-break space / BOM
+            "\u{FEFF}", // Zero-width no-break space / BOM
+            // Object placeholders carry no text of their own. Chrome's web-area marker range
+            // resolves to a lone U+FFFC for a non-text page object (a Meet tile, an image), so
+            // treating it as substantial turns an empty selection into a popup with no copy.
+            "\u{FFFC}", // Object replacement character
+            "\u{FFF9}", // Interlinear annotation anchor
+            "\u{FFFA}", // Interlinear annotation separator
+            "\u{FFFB}"  // Interlinear annotation terminator
         ]
         for scalar in specialScalars {
             set.insert(scalar)

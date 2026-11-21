@@ -1022,6 +1022,14 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
         XCTAssertEqual(counter.calls, 0, "resolved marker text must not trigger a synthetic copy")
     }
 
+    func testObjectReplacementMarkerTextIsNotEvidence() {
+        let target = Self.markerTextTarget("\u{FFFC}")
+        XCTAssertNil(
+            SelectionRetrievalCoordinator.copyEvidence(.keyboardCopy, target: target, cursor: .arrow),
+            "a marker range that resolves to an object placeholder is not selected text"
+        )
+    }
+
     func testSelectAllSkippedInsideRowContainer() async {
         let coordinator = SelectionRetrievalCoordinator(
             inspect: { Self.opaqueTarget(containedInRoles: ["AXScrollArea", "AXOutline"]) },

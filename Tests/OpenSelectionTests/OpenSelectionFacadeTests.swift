@@ -68,5 +68,8 @@ final class OpenSelectionFacadeTests: XCTestCase {
         XCTAssertNil(TextSanitizer.sanitize("   \t  \n"))
         XCTAssertTrue(TextSanitizer.isSubstantial("a"))
         XCTAssertFalse(TextSanitizer.isSubstantial("   \u{200B} "))
+        XCTAssertFalse(TextSanitizer.isSubstantial("\u{FFFC}"), "an object placeholder is not selected text")
+        XCTAssertFalse(TextSanitizer.isSubstantial(" \u{FFF9}\u{FFFA}\u{FFFB} "))
+        XCTAssertEqual(TextSanitizer.sanitize("\u{FFFC}real"), "real")
     }
 }

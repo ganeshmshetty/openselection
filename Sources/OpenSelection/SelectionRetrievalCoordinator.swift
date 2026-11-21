@@ -1094,8 +1094,8 @@ public struct SelectionRetrievalCoordinator: Sendable {
         guard strategy == .keyboardCopy || strategy == .menuCopy else { return nil }
 
         // AX-positive signals are always strong.
-        if let s = target.selectedText, !s.isEmpty { return .init("ax-selected-text", .strong) }
-        if let m = target.selectedMarkerText, !m.isEmpty { return .init("ax-marker-text", .strong) }
+        if TextSanitizer.isSubstantial(target.selectedText) { return .init("ax-selected-text", .strong) }
+        if TextSanitizer.isSubstantial(target.selectedMarkerText) { return .init("ax-marker-text", .strong) }
 
         let rangeLength = Self.rangeLength(of: target)
         if let len = rangeLength, len > 0 { return .init("ax-selected-text-range", .strong) }
