@@ -1022,6 +1022,14 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
         XCTAssertEqual(counter.calls, 0, "resolved marker text must not trigger a synthetic copy")
     }
 
+    func testObjectReplacementMarkerTextIsNotEvidence() {
+        let target = Self.markerTextTarget("\u{FFFC}")
+        XCTAssertNil(
+            SelectionRetrievalCoordinator.copyEvidence(.keyboardCopy, target: target, cursor: .arrow),
+            "a marker range that resolves to an object placeholder is not selected text"
+        )
+    }
+
     func testSelectAllSkippedInsideRowContainer() async {
         let coordinator = SelectionRetrievalCoordinator(
             inspect: { Self.opaqueTarget(containedInRoles: ["AXScrollArea", "AXOutline"]) },
@@ -1732,14 +1740,18 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
     }
 
     /// Regression (Issue #121): Chrome and Chromium PWAs do not expose AXWebArea text selections
-    /// without `--force-renderer-accessibility` and custom-render cursors (.unknown or .pointingHand over links).
-    /// When AXWebArea produces no text and cascades to keyboard-copy, the coordinator must allow
-    /// the copy fallback.
-    func testChromeEmptyWebAreaFallbackPermitsCopyForUnknownOrPointingHandCursor() async {
-        for cursor: CursorClass in [.unknown, .pointingHand] {
+    /// without `--force-renderer-accessibility` and can show non-I-beam cursors (.arrow, .unknown,
+    /// or .pointingHand). When AXWebArea produces no text and cascades to keyboard-copy, the
+    /// coordinator must allow the weak copy fallback (gated downstream on an enabled Copy menu).
+    func testChromeEmptyWebAreaFallbackPermitsCopyForNonBeamCursors() async {
+        for cursor: CursorClass in [.arrow, .unknown, .pointingHand] {
             let coordinator = SelectionRetrievalCoordinator(
                 inspect: { Self.opaqueTarget(containedInRoles: ["AXWebArea"]) },
-                copyCapture: { _ in SelectionResult(text: "captured from chrome") }
+                copyCapture: { request in
+                    XCTAssertEqual(request.evidence.strength, .weak)
+                    XCTAssertTrue(request.requiresEnabledCopyMenu)
+                    return SelectionResult(text: "captured from chrome")
+                }
             )
             let result = await coordinator.retrieve(
                 for: AppIdentity(bundleIdentifier: "com.google.Chrome"),
@@ -1748,6 +1760,69 @@ final class SelectionRetrievalCoordinatorTests: XCTestCase {
             )
             XCTAssertEqual(result?.text, "captured from chrome", "cursor=\(cursor.rawValue) must allow copy fallback in browser")
         }
+    }
+
+    /// Regression (Issue #210): Safari exposes DOM selections natively through AXWebArea. When an
+    /// exposed web area reports no selection on a non-text cursor, the fallback must not grant
+    /// weak copy evidence or post a synthetic ⌘C.
+    func testSafariExposedEmptyWebAreaBlocksCopyWithoutTextCue() async {
+        for cursor: CursorClass in [.arrow, .unknown, .pointingHand] {
+            let coordinator = SelectionRetrievalCoordinator(
+                inspect: { Self.opaqueTarget(containedInRoles: ["AXWebArea"]) },
+                copyCapture: { _ in
+                    XCTFail("Safari with an exposed empty AXWebArea and \(cursor.rawValue) must not post a synthetic copy")
+                    return SelectionResult(text: "unexpected")
+                }
+            )
+            let result = await coordinator.retrieve(
+                for: AppIdentity(bundleIdentifier: "com.apple.Safari"),
+                policy: AppPolicyContext(retrievalMode: .axWebArea),
+                cursor: cursor,
+                trigger: .dragEnd
+            )
+            XCTAssertNil(result, "cursor=\(cursor.rawValue) must not fall back to copy in Safari")
+        }
+    }
+
+    func testSwiftUIHostingViewInsideTableRowUsesEnabledCopyGate() async {
+        for trigger: TriggerSource in [.dragEnd, .doubleClick] {
+            let box = CopyRequestBox()
+            let coordinator = SelectionRetrievalCoordinator(
+                inspect: {
+                    AXElementInspector.Target(
+                        role: "AXGroup",
+                        subRole: "AXHostingView",
+                        containedInRoles: ["AXCell", "AXRow", "AXScrollArea", "AXWindow"]
+                    )
+                },
+                copyCapture: { request in
+                    box.requests.append(request)
+                    return SelectionResult(text: "gemini response text")
+                }
+            )
+            let result = await coordinator.retrieve(
+                for: AppIdentity(bundleIdentifier: "com.google.GeminiMacOS"),
+                policy: AppPolicyContext(retrievalMode: .keyboardCopy),
+                cursor: .other,
+                trigger: trigger
+            )
+            XCTAssertEqual(result?.text, "gemini response text", "\(trigger)")
+            XCTAssertEqual(box.requests.first?.evidence.strength, .weak)
+            XCTAssertEqual(box.requests.first?.requiresEnabledCopyMenu, true)
+        }
+
+        // Non-gesture triggers must still be refused.
+        let (programmatic, programmaticBox) = await gestureRetrieve(
+            target: AXElementInspector.Target(
+                role: "AXGroup",
+                subRole: "AXHostingView",
+                containedInRoles: ["AXCell", "AXRow"]
+            ),
+            cursor: .other,
+            trigger: .programmatic
+        )
+        XCTAssertNil(programmatic)
+        XCTAssertTrue(programmaticBox.requests.isEmpty)
     }
 }
 

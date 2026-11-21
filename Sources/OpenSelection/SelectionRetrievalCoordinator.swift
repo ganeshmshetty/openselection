@@ -1094,8 +1094,8 @@ public struct SelectionRetrievalCoordinator: Sendable {
         guard strategy == .keyboardCopy || strategy == .menuCopy else { return nil }
 
         // AX-positive signals are always strong.
-        if let s = target.selectedText, !s.isEmpty { return .init("ax-selected-text", .strong) }
-        if let m = target.selectedMarkerText, !m.isEmpty { return .init("ax-marker-text", .strong) }
+        if TextSanitizer.isSubstantial(target.selectedText) { return .init("ax-selected-text", .strong) }
+        if TextSanitizer.isSubstantial(target.selectedMarkerText) { return .init("ax-marker-text", .strong) }
 
         let rangeLength = Self.rangeLength(of: target)
         if let len = rangeLength, len > 0 { return .init("ax-selected-text-range", .strong) }
@@ -1109,7 +1109,14 @@ public struct SelectionRetrievalCoordinator: Sendable {
             && target.containedInRoles.isDisjoint(with: nonTextSelectionRoles.subtracting(["AXList"]))
             && cursor == .beam
             && trigger.map { selectionGestureTriggers.contains($0) } == true
-        if Self.isNonTextSelectionContext(target), !isStaticTextListGesture { return nil }
+        // SwiftUI Lists/Tables wrap selectable content in AXGroup/AXHostingView inside AXCell/AXRow.
+        // Unlike AppKit row selections, Copy stays disabled unless text is actually selected, so a
+        // completed selection gesture can safely defer to the enabled-Copy-menu gate.
+        let isHostingViewListGesture = target.role == "AXGroup"
+            && target.subRole == "AXHostingView"
+            && target.containedInRoles.isDisjoint(with: ["AXImage", "AXCollection", "AXGrid"])
+            && trigger.map { selectionGestureTriggers.contains($0) } == true
+        if Self.isNonTextSelectionContext(target), !isStaticTextListGesture, !isHostingViewListGesture { return nil }
 
         let isTextControl = target.role.map { textEvidenceRoles.contains($0) } == true
             || !target.containedInRoles.isDisjoint(with: textEvidenceRoles)
@@ -1120,17 +1127,25 @@ public struct SelectionRetrievalCoordinator: Sendable {
         }
         if isTextControl { return .init("ax-text-control", .weak) }
 
+        let exposesWebContent = target.webArea != nil || target.role == "AXWebArea"
+            || target.containedInRoles.contains("AXWebArea")
+
         if let bundleID, AppMatching.isBrowser(bundleID) {
-            if isFallbackFromAX { return .init("ax-empty-browser-fallback", .weak) }
-            if cursor == .unknown || cursor == .pointingHand { return .init("browser-cursor:\(cursor.rawValue)", .weak) }
+            // WebKit (Safari/Orion) exposes DOM selections natively through AXWebArea, so an
+            // exposed web area with no selection on a non-text cursor means nothing is selected.
+            // Chromium/Firefox/Arc can expose an AXWebArea container while still hiding the text
+            // selection from AX, so they still need the weak fallback (gated on enabled Copy).
+            let isWebKitBrowser = AppMatching.matchesAny(AppMatching.safariGroup, bundleID: bundleID)
+            if !(isWebKitBrowser && exposesWebContent) {
+                if isFallbackFromAX { return .init("ax-empty-browser-fallback", .weak) }
+                if cursor == .unknown || cursor == .pointingHand { return .init("browser-cursor:\(cursor.rawValue)", .weak) }
+            }
         }
         // Electron pages often show an arrow or custom cursor over selectable text, and with no
         // AX tree the selection is invisible to AX. A completed drag or multi-click is still
         // selection intent; as weak evidence it posts Copy only if the Copy command is confirmed
         // enabled. A web area that AX *does* expose and that reports no selected text is a
         // contrary signal (a Figma canvas object drag), so it never qualifies.
-        let exposesWebContent = target.webArea != nil || target.role == "AXWebArea"
-            || target.containedInRoles.contains("AXWebArea")
         if let trigger, selectionGestureTriggers.contains(trigger), !exposesWebContent {
             return .init("selection-gesture:\(trigger.raw)", .weak)
         }
