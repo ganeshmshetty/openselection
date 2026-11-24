@@ -318,11 +318,22 @@ public struct SelectionRetrievalCoordinator: Sendable {
                 ])
                 return finish(nil, false, .targetChanged)
             }
-            if let focusedPID, focusedPID != requestedPID, let focused {
+            if let focusedPID {
+                if focusedPID != requestedPID, let focused {
+                    activeTrace.log(.debug, .ax, "focused app accepted", fields: [
+                        "requestedPID": .int(Int64(requestedPID)),
+                        "focusedPID": .int(Int64(focusedPID)),
+                        "focusedBundle": .token(focused.bundleIdentifier ?? "unknown")
+                    ])
+                }
+            } else {
+                // AXUIElementGetPid can fail on a transient or invalid helper element. Retrieval
+                // intentionally proceeds on the requested app, but the unknown identity must stay
+                // distinguishable from an exact PID match when diagnosing a missing popup.
                 activeTrace.log(.debug, .ax, "focused app accepted", fields: [
                     "requestedPID": .int(Int64(requestedPID)),
-                    "focusedPID": .int(Int64(focusedPID)),
-                    "focusedBundle": .token(focused.bundleIdentifier ?? "unknown")
+                    "focusedPID": .token("unavailable"),
+                    "focusedBundle": .token("unknown")
                 ])
             }
         }
