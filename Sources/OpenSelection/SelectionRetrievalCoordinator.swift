@@ -301,8 +301,30 @@ public struct SelectionRetrievalCoordinator: Sendable {
 
         if let requestedPID = app.processIdentifier, let focusedApp = target.focusedApp {
             var inspectedPID: pid_t = 0
-            guard AXUIElementGetPid(focusedApp, &inspectedPID) == .success,
-                  inspectedPID == requestedPID else { return finish(nil, false, .targetChanged) }
+            let requested = FocusedAppIdentity.Descriptor(pid: requestedPID)
+                ?? FocusedAppIdentity.Descriptor(processIdentifier: requestedPID,
+                                                 bundleIdentifier: app.bundleIdentifier)
+            let focusedPID: pid_t? = AXUIElementGetPid(focusedApp, &inspectedPID) == .success
+                ? inspectedPID
+                : nil
+            let focused = focusedPID.flatMap { FocusedAppIdentity.Descriptor(pid: $0) }
+            if !FocusedAppIdentity.accepts(requested: requested,
+                                           focusedPID: focusedPID,
+                                           focused: focused) {
+                activeTrace.log(.warning, .ax, "focused app changed", fields: [
+                    "requestedPID": .int(Int64(requestedPID)),
+                    "focusedPID": focusedPID.map { .int(Int64($0)) } ?? .token("unavailable"),
+                    "focusedBundle": .token(focused?.bundleIdentifier ?? "unknown")
+                ])
+                return finish(nil, false, .targetChanged)
+            }
+            if let focusedPID, focusedPID != requestedPID, let focused {
+                activeTrace.log(.debug, .ax, "focused app accepted", fields: [
+                    "requestedPID": .int(Int64(requestedPID)),
+                    "focusedPID": .int(Int64(focusedPID)),
+                    "focusedBundle": .token(focused.bundleIdentifier ?? "unknown")
+                ])
+            }
         }
         var targetPID: pid_t = app.processIdentifier ?? 0
         if targetPID == 0, let axApp = target.focusedApp {
